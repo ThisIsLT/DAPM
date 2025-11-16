@@ -27,7 +27,7 @@ By selecting simulation scenes, setting the time, and generating random pedestri
 **Progressive Quantification Bins Module.** This module gradually improves the estimation accuracy of camera pose and depth by continuously increasing the number of bins for classification estimation. Each bin block obtains the corresponding classification result by concatenating the input features and performing convolution processing. Finally, the depth head and pose head fuse all the preceding features to give the final estimation result. -->
 
 
-## Vis
+## Visual Comparison
 
 <center>
 <img src="https://github.com/ThisIsLT/DAPM/blob/main/fig/vis_0802_2_horizontal.jpg" width="800" height="500">
