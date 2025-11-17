@@ -3,6 +3,19 @@
 
 ## UAPD dataset
 
+Train the model using the following command:
+
+```
+python train.py
+```
+
+Run model inference using the following command:
+
+```
+python test.py
+```
+
+
 
 **The dataset is available at the following link:**
 https://pan.baidu.com/s/1wP8FzE-KBbYsO_diMaxvdQ?pwd=k37s
