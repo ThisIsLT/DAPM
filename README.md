@@ -1,6 +1,28 @@
 # DAPM：UAV Monocular Depth Estimation from Any Height, Pitch, Roll and FOV
 
 
+## Setup
+
+### Prerequisites
+* Linux or Windows
+* Python 3.8
+* NVIDIA GPU + CUDA 11.8
+
+### Quick Start
+Run the following commands to set up the environment:
+
+```bash
+# 1. Create and activate environment
+conda create -n DAPM python=3.8 -y
+conda activate DAPM
+
+# 2. Install binary libs (required for video/image processing)
+conda install ffmpeg=4.2.2 opencv=4.5.4 -c defaults -y
+
+# 3. Install python libs
+pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
+```
+
 Train the model using the following command:
 
 ```
