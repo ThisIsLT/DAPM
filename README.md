@@ -17,7 +17,7 @@ conda create -n DAPM python=3.8 -y
 conda activate DAPM
 
 # 2. Install binary libs (required for video/image processing)
-conda install ffmpeg=4.2.2 opencv=4.5.4 -c defaults -y
+conda install opencv=4.5.4 -c defaults -y
 
 # 3. Install python libs
 pip install -r requirements.txt --extra-index-url https://download.pytorch.org/whl/cu118
