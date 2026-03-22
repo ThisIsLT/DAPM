@@ -9,23 +9,34 @@ from utils.metric import calculate_pose_errors, compute_depth_metrics
 from dataset import DepthPoseDataset
 from utils.log import log_message, log_config, log_errors, log_loss, log_pose_errors
 from utils.loss import scale_invariant_loss, gard_weight_loss
+
+
+
  
-batchsize = 32
-numworkers = 8
-epochs = 24
-os.environ["CUDA_VISIBLE_DEVICES"] = "0, 1, 2"
-# Define log folder path and model save folder path
-project_name = time.strftime('%Y%m%d_%H%M%S') + '_v1'
-log_dir = f"/root/pose_depth/log/{project_name}"
-checkpoint_dir = f"/root/pose_depth/checkpoint/{project_name}"
+def parse_args():
+    parser = argparse.ArgumentParser(description="Train EfficientDepthPoseNet")
+    parser.add_argument('--batchsize', type=int, default=32)
+    parser.add_argument('--numworkers', type=int, default=8)
+    parser.add_argument('--Iters', type=int, default=32000, help='Total training iterations')
+    parser.add_argument('--gpus', type=str, default="0, 1, 2", help='Visible GPU devices')
+    parser.add_argument('--project_name', type=str, default=None, help='Project name, default is timestamp_v1')
+    parser.add_argument('--val_freq', type=int, default=1000, help='Validation frequency in iterations')
+    return parser.parse_args()
 
+args = parse_args() 
 
+# GPU Settings
+os.environ["CUDA_VISIBLE_DEVICES"] = args.gpus
 
-# Create log folder and checkpoint folder if they don't exist
+# Project name and paths
+if args.project_name is None:
+    args.project_name = time.strftime('%Y%m%d_%H%M%S')
+
+log_dir = f"/root/pose_depth/log/{args.project_name}"
+checkpoint_dir = f"/root/pose_depth/checkpoint/{args.project_name}"
+
 os.makedirs(log_dir, exist_ok=True)
 os.makedirs(checkpoint_dir, exist_ok=True)
-
-log_file_name = f"{log_dir}/{project_name}.txt"
 
 
 
@@ -45,8 +56,8 @@ dataset_root = "UAPD"  # Root directory path
 train_dataset = DepthPoseDataset(root_dir=dataset_root, phase="train", transform=transform)
 val_dataset = DepthPoseDataset(root_dir=dataset_root, phase="val", transform=transform_val)
 
-train_dataloader = DataLoader(train_dataset, batch_size=batchsize, shuffle=True, num_workers=numworkers, drop_last=True)
-val_dataloader = DataLoader(val_dataset, batch_size=batchsize, shuffle=False, num_workers=numworkers, drop_last=True)
+train_dataloader = DataLoader(train_dataset, batch_size=args.batchsize, shuffle=True, num_workers=args.numworkers, drop_last=True)
+val_dataloader = DataLoader(val_dataset, batch_size=args.batchsize, shuffle=False, num_workers=args.numworkers, drop_last=True)
 
 
 
@@ -106,205 +117,208 @@ if __name__ == '__main__':
     # Log configuration
     log_config(model, optimizer, scheduler)
 
+    # Infinite sampler for Iter-based training
+    def get_data_generator(loader):
+        while True:
+            for data in loader:
+                yield data
+    
+    train_gen = get_data_generator(train_dataloader)
 
     # Start training from start_epoch
-    for epoch in range(start_epoch, epochs):
-        model.train()
-        for step, (rgb_images, depth_images, depth_binary,
-                   depth_one_hot_16, depth_one_hot_64,
-                   pose_labels, pose_one_hot_16, pose_one_hot_64, p2d_label) in enumerate(train_dataloader):
+    model.train()
+    while current_iter < args.Iters:
 
-            rgb_images = rgb_images.to(device)
-            depth_images = depth_images.to(device)
-            depth_binary = depth_binary.to(device)
-            depth_one_hot_16 = depth_one_hot_16.to(device)
-            depth_one_hot_64 = depth_one_hot_64.to(device)
-            pose_one_hot_16 = pose_one_hot_16.to(device)
-            pose_one_hot_64 = pose_one_hot_64.to(device)
-            pose_labels = pose_labels.to(device)
-            p2d_label = p2d_label.to(device)
+        data = next(train_gen)
+        rgb_images, depth_images, depth_binary, depth_one_hot_16, depth_one_hot_64, \
+        pose_labels, pose_one_hot_16, pose_one_hot_64, p2d_label = [d.to(device) for d in data]
 
-            optimizer.zero_grad()
-            (pred_init_depth, pred_depth, pred_init_pose, pred_pose,
-            pred_depth_binary,
-            pred_depth_q16, pred_depth_q64,
-            pred_pose_q16, pred_pose_q64, pred_p2d) = model(rgb_images)
+        optimizer.zero_grad()
+        (pred_init_depth, pred_depth, pred_init_pose, pred_pose,
+        pred_depth_binary,
+        pred_depth_q16, pred_depth_q64,
+        pred_pose_q16, pred_pose_q64, pred_p2d) = model(rgb_images, p2d_label.squeeze(1), float(current_iter)/float(args.Iters))
 
 
-            loss_bce = criterion_bce(pred_depth_binary, depth_binary)
-            loss_dq16 = criterion_ce(pred_depth_q16, depth_one_hot_16.argmax(dim=1))
-            loss_dq64 = criterion_ce(pred_depth_q64, depth_one_hot_64.argmax(dim=1))
-            loss_init_depth = scale_invariant_loss(pred_init_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
-            loss_depth = scale_invariant_loss(pred_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
-            depth_grad_loss = gard_weight_loss(predicted_depth, depth_images)
+        loss_bce = criterion_bce(pred_depth_binary, depth_binary)
+        loss_dq16 = criterion_ce(pred_depth_q16, depth_one_hot_16.argmax(dim=1))
+        loss_dq64 = criterion_ce(pred_depth_q64, depth_one_hot_64.argmax(dim=1))
+        loss_init_depth = scale_invariant_loss(pred_init_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
+        loss_depth = scale_invariant_loss(pred_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
+        depth_grad_loss = gard_weight_loss(predicted_depth, depth_images)
 
-            loss_pq16 = criterion_ce(pred_pose_q16.permute(0,2,1), pose_one_hot_16.argmax(dim=2))
-            loss_pq64 = criterion_ce(pred_pose_q64.permute(0,2,1), pose_one_hot_64.argmax(dim=2))
-            loss_init_pose = criterion_mse(pred_init_pose, pose_labels)
-            loss_pose = criterion_mse(pred_pose, pose_labels)
+        loss_pq16 = criterion_ce(pred_pose_q16.permute(0,2,1), pose_one_hot_16.argmax(dim=2))
+        loss_pq64 = criterion_ce(pred_pose_q64.permute(0,2,1), pose_one_hot_64.argmax(dim=2))
+        loss_init_pose = criterion_mse(pred_init_pose, pose_labels)
+        loss_pose = criterion_mse(pred_pose, pose_labels)
 
-            loss_p2d = criterion_mse(pred_p2d.squeeze(), p2d_label.squeeze())
-
-
-            loss_init = loss_init_depth + loss_init_pose
-            loss_dq = loss_bce + loss_dq16 + loss_dq64 
-            loss_pq = loss_pq16 + loss_pq64
-
-            total_loss = (
-                loss_depth + 10 * loss_pose + loss_init +
-                loss_dq + loss_pq + 10 * loss_p2d + 10 * depth_grad_loss
-            )
+        loss_p2d = criterion_mse(pred_p2d.squeeze(), p2d_label.squeeze())
 
 
-            total_loss.backward()
-            optimizer.step()
-            scheduler.step()
+        loss_init = loss_init_depth + loss_init_pose
+        loss_dq = loss_bce + loss_dq16 + loss_dq64 
+        loss_pq = loss_pq16 + loss_pq64
 
-            if step % 5 == 0:
-                h_err, p_err, r_err, f_err, d_err = calculate_pose_errors(
-                    pred_pose, pose_labels, pred_depth, depth_images)
-                log_errors(epoch, step, "Train",
-                           d_err.mean().item(), h_err.mean().item(),
-                           p_err.mean().item(), r_err.mean().item(), f_err.mean().item())
-                log_loss(epoch, step, total_loss,
-                         loss_init_depth, loss_depth, loss_init_pose, loss_pose,
-                         loss_bce, loss_dq16, loss_dq64, depth_grad_loss, loss_pq16, loss_pq64, loss_p2d)
+        total_loss = (
+            loss_depth + 10 * loss_pose + loss_init +
+            loss_dq + loss_pq + 10 * loss_p2d + 10 * depth_grad_loss
+        )
 
 
-        # Validation phase
-        all_pred = []
-        all_gt   = []
-        all_h_errs, all_p_errs, all_r_errs, all_f_errs, all_d_errs = [], [], [], [], []
-        model.eval()
-        val_loss = 0.0
-        total_height_error, total_pitch_error, total_roll_error, total_fov_error, total_depth_error = 0, 0, 0, 0, 0
-        for step, (rgb_images, depth_images, depth_binary, depth_one_hot_16, depth_one_hot_64, pose_labels, pose_one_hot_16, pose_one_hot_64, p2d_label) in enumerate(val_dataloader):
+        total_loss.backward()
+        optimizer.step()
+        scheduler.step()
 
-            # Move data to device
-            rgb_images = rgb_images.to(device)
-            depth_images = depth_images.to(device)
-            depth_binary = depth_binary.to(device)
-            depth_one_hot_16 = depth_one_hot_16.to(device)
-            depth_one_hot_64 = depth_one_hot_64.to(device)
-            pose_one_hot_16 = pose_one_hot_16.to(device)
-            pose_one_hot_64 = pose_one_hot_64.to(device)
-            pose_labels = pose_labels.to(device)
-            p2d_label = p2d_label.to(device)
+        if step % 5 == 0:
+            h_err, p_err, r_err, f_err, d_err = calculate_pose_errors(
+                pred_pose, pose_labels, pred_depth, depth_images)
+            log_errors(epoch, step, "Train",
+                        d_err.mean().item(), h_err.mean().item(),
+                        p_err.mean().item(), r_err.mean().item(), f_err.mean().item())
+            log_loss(epoch, step, total_loss,
+                        loss_init_depth, loss_depth, loss_init_pose, loss_pose,
+                        loss_bce, loss_dq16, loss_dq64, depth_grad_loss, loss_pq16, loss_pq64, loss_p2d)
 
-            with torch.no_grad():
-                # Forward propagation
-                (pred_init_depth, pred_depth, pred_init_pose, pred_pose,
-                pred_depth_binary,
-                pred_depth_q16, pred_depth_q64,
-                pred_pose_q16, pred_pose_q64, pred_p2d) = model(rgb_images)
 
-            all_pred.append(pred_depth.squeeze(1).cpu())
-            all_gt.append(depth_images.squeeze(1).cpu())
+        # Validation & Saving
+        if current_iter % args.val_freq == 0 or current_iter == args.Iters:
 
-            # Calculate loss
-            loss_bce = criterion_bce(pred_depth_binary, depth_binary)
-            loss_dq16 = criterion_ce(pred_depth_q16, depth_one_hot_16.argmax(dim=1))
-            loss_dq64 = criterion_ce(pred_depth_q64, depth_one_hot_64.argmax(dim=1))
-            loss_init_depth = scale_invariant_loss(pred_init_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
-            loss_depth = scale_invariant_loss(pred_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
-            depth_grad_loss = gard_weight_loss(predicted_depth, depth_images)
+            # Validation phase
+            all_pred = []
+            all_gt   = []
+            all_h_errs, all_p_errs, all_r_errs, all_f_errs, all_d_errs = [], [], [], [], []
+            model.eval()
+            val_loss = 0.0
+            total_height_error, total_pitch_error, total_roll_error, total_fov_error, total_depth_error = 0, 0, 0, 0, 0
+            for step, (rgb_images, depth_images, depth_binary, depth_one_hot_16, depth_one_hot_64, pose_labels, pose_one_hot_16, pose_one_hot_64, p2d_label) in enumerate(val_dataloader):
 
-            loss_pq16 = criterion_ce(pred_pose_q16.permute(0,2,1), pose_one_hot_16.argmax(dim=2))
-            loss_pq64 = criterion_ce(pred_pose_q64.permute(0,2,1), pose_one_hot_64.argmax(dim=2))
-            loss_init_pose = criterion_mse(pred_init_pose, pose_labels)
-            loss_pose = criterion_mse(pred_pose, pose_labels)
+                # Move data to device
+                rgb_images = rgb_images.to(device)
+                depth_images = depth_images.to(device)
+                depth_binary = depth_binary.to(device)
+                depth_one_hot_16 = depth_one_hot_16.to(device)
+                depth_one_hot_64 = depth_one_hot_64.to(device)
+                pose_one_hot_16 = pose_one_hot_16.to(device)
+                pose_one_hot_64 = pose_one_hot_64.to(device)
+                pose_labels = pose_labels.to(device)
+                p2d_label = p2d_label.to(device)
 
-            loss_p2d = criterion_mse(pred_p2d.squeeze(), p2d_label.squeeze())
+                with torch.no_grad():
+                    # Forward propagation
+                    (pred_init_depth, pred_depth, pred_init_pose, pred_pose,
+                    pred_depth_binary,
+                    pred_depth_q16, pred_depth_q64,
+                    pred_pose_q16, pred_pose_q64, pred_p2d) = model(rgb_images, p2d_label.squeeze(1), float(current_iter)/float(args.Iters))
 
-            loss_init = loss_init_depth + loss_init_pose
-            loss_dq = loss_bce + loss_dq16 + loss_dq64 
-            loss_pq = loss_pq16 + loss_pq64
+                all_pred.append(pred_depth.squeeze(1).cpu())
+                all_gt.append(depth_images.squeeze(1).cpu())
 
-            total_loss = (
-                loss_depth + 10 * loss_pose + loss_init +
-                loss_dq + loss_pq + 10 * loss_p2d + 10 * depth_grad_loss
-            )
+                # Calculate loss
+                loss_bce = criterion_bce(pred_depth_binary, depth_binary)
+                loss_dq16 = criterion_ce(pred_depth_q16, depth_one_hot_16.argmax(dim=1))
+                loss_dq64 = criterion_ce(pred_depth_q64, depth_one_hot_64.argmax(dim=1))
+                loss_init_depth = scale_invariant_loss(pred_init_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
+                loss_depth = scale_invariant_loss(pred_depth.squeeze(1), depth_images.squeeze(1), λ=0.85, a=10.0)
+                depth_grad_loss = gard_weight_loss(predicted_depth, depth_images)
 
-            val_loss += total_loss.item()
+                loss_pq16 = criterion_ce(pred_pose_q16.permute(0,2,1), pose_one_hot_16.argmax(dim=2))
+                loss_pq64 = criterion_ce(pred_pose_q64.permute(0,2,1), pose_one_hot_64.argmax(dim=2))
+                loss_init_pose = criterion_mse(pred_init_pose, pose_labels)
+                loss_pose = criterion_mse(pred_pose, pose_labels)
 
-            # Calculate and accumulate errors
-            height_error, pitch_error, roll_error, fov_error, depth_error = calculate_pose_errors(pred_pose, pose_labels, pred_depth, depth_images)
-            total_height_error += height_error.mean().item()
-            total_pitch_error += pitch_error.mean().item()
-            total_roll_error += roll_error.mean().item()
-            total_fov_error += fov_error.mean().item()
-            total_depth_error += depth_error.mean().item()
+                loss_p2d = criterion_mse(pred_p2d.squeeze(), p2d_label.squeeze())
 
-            all_h_errs.append(height_error.cpu())
-            all_p_errs.append(pitch_error.cpu())
-            all_r_errs.append(roll_error.cpu())
-            all_f_errs.append(fov_error.cpu())
-            all_d_errs.append(depth_error.cpu())
+                loss_init = loss_init_depth + loss_init_pose
+                loss_dq = loss_bce + loss_dq16 + loss_dq64 
+                loss_pq = loss_pq16 + loss_pq64
 
-        all_pred = torch.cat(all_pred, dim=0)
-        all_gt   = torch.cat(all_gt,   dim=0)
-        all_h_errs = torch.cat(all_h_errs, dim=0)
-        all_p_errs = torch.cat(all_p_errs, dim=0)
-        all_r_errs = torch.cat(all_r_errs, dim=0)
-        all_f_errs = torch.cat(all_f_errs, dim=0)
-        all_d_errs = torch.cat(all_d_errs, dim=0)
+                total_loss = (
+                    loss_depth + 10 * loss_pose + loss_init +
+                    loss_dq + loss_pq + 10 * loss_p2d + 10 * depth_grad_loss
+                )
 
-        # Compute all depth metrics
-        val_metrics = compute_depth_metrics(all_pred, all_gt)
+                val_loss += total_loss.item()
 
-        # Log validation errors and loss
-        avg_val_loss = val_loss / len(val_dataloader)
-        avg_height_error = total_height_error / len(val_dataloader)
-        avg_pitch_error = total_pitch_error / len(val_dataloader)
-        avg_roll_error = total_roll_error / len(val_dataloader)
-        avg_fov_error = total_fov_error / len(val_dataloader)
-        avg_depth_error = total_depth_error / len(val_dataloader)
+                # Calculate and accumulate errors
+                height_error, pitch_error, roll_error, fov_error, depth_error = calculate_pose_errors(pred_pose, pose_labels, pred_depth, depth_images)
+                total_height_error += height_error.mean().item()
+                total_pitch_error += pitch_error.mean().item()
+                total_roll_error += roll_error.mean().item()
+                total_fov_error += fov_error.mean().item()
+                total_depth_error += depth_error.mean().item()
 
-        log_message(f" ")
-        log_message(f"Validation Depth Metrics:")
-        for name, value in val_metrics.items():
-            log_message(f"  {name}: {value:.4f}")
-        log_pose_errors(all_h_errs, all_p_errs, all_r_errs, all_f_errs, all_d_errs,
-                epoch, epochs, tag="Validation")
-        log_errors(epoch, 0, "Validation", avg_depth_error, avg_height_error, avg_pitch_error, avg_roll_error, avg_fov_error)
-        log_loss(epoch, total_loss,
-                         loss_init_depth, loss_depth, loss_init_pose, loss_pose,
-                         loss_bce, loss_dq16, loss_dq64, depth_grad_loss, loss_pq16, loss_pq64, loss_p2d)
+                all_h_errs.append(height_error.cpu())
+                all_p_errs.append(pitch_error.cpu())
+                all_r_errs.append(roll_error.cpu())
+                all_f_errs.append(fov_error.cpu())
+                all_d_errs.append(depth_error.cpu())
 
-        # Save the best model
-        if avg_val_loss < best_val_loss:
-            best_val_loss = avg_val_loss
-            best_checkpoint_path = f"{checkpoint_dir}/best_model.pth"
-            # Handle multi-GPU parallel training
-            torch.save({
+            all_pred = torch.cat(all_pred, dim=0)
+            all_gt   = torch.cat(all_gt,   dim=0)
+            all_h_errs = torch.cat(all_h_errs, dim=0)
+            all_p_errs = torch.cat(all_p_errs, dim=0)
+            all_r_errs = torch.cat(all_r_errs, dim=0)
+            all_f_errs = torch.cat(all_f_errs, dim=0)
+            all_d_errs = torch.cat(all_d_errs, dim=0)
+
+            # Compute all depth metrics
+            val_metrics = compute_depth_metrics(all_pred, all_gt)
+
+            # Log validation errors and loss
+            avg_val_loss = val_loss / len(val_dataloader)
+            avg_height_error = total_height_error / len(val_dataloader)
+            avg_pitch_error = total_pitch_error / len(val_dataloader)
+            avg_roll_error = total_roll_error / len(val_dataloader)
+            avg_fov_error = total_fov_error / len(val_dataloader)
+            avg_depth_error = total_depth_error / len(val_dataloader)
+
+            log_message(f" ")
+            log_message(f"Validation Depth Metrics:")
+            for name, value in val_metrics.items():
+                log_message(f"  {name}: {value:.4f}")
+            log_pose_errors(all_h_errs, all_p_errs, all_r_errs, all_f_errs, all_d_errs,
+                    epoch, epochs, tag="Validation")
+            log_errors(epoch, 0, "Validation", avg_depth_error, avg_height_error, avg_pitch_error, avg_roll_error, avg_fov_error)
+            log_loss(epoch, total_loss,
+                                loss_init_depth, loss_depth, loss_init_pose, loss_pose,
+                                loss_bce, loss_dq16, loss_dq64, depth_grad_loss, loss_pq16, loss_pq64, loss_p2d)
+
+
+            model.eval()
+            # Save the best model
+            if avg_val_loss < best_val_loss:
+                best_val_loss = avg_val_loss
+                best_checkpoint_path = f"{checkpoint_dir}/best_model.pth"
+                # Handle multi-GPU parallel training
+                torch.save({
+                    'epoch': epoch + 1,
+                    'model_state_dict': model.module.state_dict() if hasattr(model, 'module') else model.state_dict(),
+                    'optimizer_state_dict': optimizer.state_dict(),
+                    'scheduler_state_dict': scheduler.state_dict(),
+                    'val_loss': avg_val_loss,
+                    'val_metrics': val_metrics
+                }, best_checkpoint_path)
+                log_message(f"New best model saved at {best_checkpoint_path} with val_loss: {avg_val_loss:.4f}")
+
+            # Save current epoch checkpoint
+            current_checkpoint = {
                 'epoch': epoch + 1,
                 'model_state_dict': model.module.state_dict() if hasattr(model, 'module') else model.state_dict(),
                 'optimizer_state_dict': optimizer.state_dict(),
                 'scheduler_state_dict': scheduler.state_dict(),
                 'val_loss': avg_val_loss,
                 'val_metrics': val_metrics
-            }, best_checkpoint_path)
-            log_message(f"New best model saved at {best_checkpoint_path} with val_loss: {avg_val_loss:.4f}")
+            }
 
-        # Save current epoch checkpoint
-        current_checkpoint = {
-            'epoch': epoch + 1,
-            'model_state_dict': model.module.state_dict() if hasattr(model, 'module') else model.state_dict(),
-            'optimizer_state_dict': optimizer.state_dict(),
-            'scheduler_state_dict': scheduler.state_dict(),
-            'val_loss': avg_val_loss,
-            'val_metrics': val_metrics
-        }
+            current_checkpoint_path = f"{checkpoint_dir}/epoch_{epoch+1}_checkpoint.pth"
+            torch.save(current_checkpoint, current_checkpoint_path)
+            checkpoint_queue.append(current_checkpoint_path)
 
-        current_checkpoint_path = f"{checkpoint_dir}/epoch_{epoch+1}_checkpoint.pth"
-        torch.save(current_checkpoint, current_checkpoint_path)
-        checkpoint_queue.append(current_checkpoint_path)
+            # Keep at most 3 checkpoints
+            while len(checkpoint_queue) > 3:
+                old_checkpoint = checkpoint_queue.pop(0)
+                if os.path.exists(old_checkpoint):
+                    os.remove(old_checkpoint)
+                    log_message(f"Removed old checkpoint: {old_checkpoint}")
 
-        # Keep at most 3 checkpoints
-        while len(checkpoint_queue) > 3:
-            old_checkpoint = checkpoint_queue.pop(0)
-            if os.path.exists(old_checkpoint):
-                os.remove(old_checkpoint)
-                log_message(f"Removed old checkpoint: {old_checkpoint}")
-
-        log_message(f"Current checkpoints preserved: {[os.path.basename(p) for p in checkpoint_queue[-3:]]}")
+            log_message(f"Current checkpoints preserved: {[os.path.basename(p) for p in checkpoint_queue[-3:]]}")
