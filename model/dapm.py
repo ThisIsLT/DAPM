@@ -1,7 +1,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from resnet50 import ResNet50Encoder
+from .resnet50 import ResNet50Encoder
 from utils.metric import pose_to_log_depth
 
 
@@ -325,7 +325,7 @@ class EfficientDepthPoseNet(nn.Module):
         self.sigmoid = nn.Sigmoid()
 
 
-    def forward(self, x):
+    def forward(self, x, p2d_label=0, iter_rate=1):
 
         d2, d3, d4 = self.depth_encoder(x)
       
@@ -334,6 +334,16 @@ class EfficientDepthPoseNet(nn.Module):
         d2p = self.depth_to_pose(depth_init)
         init_pose, pose, pose_quant_16, pose_quant_64 = self.pose_decoder(d2p, d2, d3, d4)
         p2d = self.pose_to_log_depth(pose)
+
+
+        if iter_rate <= 0.1:
+            p2d_new = p2d_label
+        elif iter_rate <= 0.9:
+            p2d_new = p2d_label * (1 - iter_rate) + p2d * iter_rate
+        else:
+            p2d_new = p2d
+
+
         p2d_32 = self.p2d_to64(p2d)
 
 
