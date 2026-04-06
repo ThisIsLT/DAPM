@@ -41,8 +41,10 @@ python test.py
 
 ## UAPD dataset
 
-**The dataset is available at the following link:**
-https://pan.baidu.com/s/1wP8FzE-KBbYsO_diMaxvdQ?pwd=k37s
+**The **UAPD** dataset is hosted on the following platforms:**
+
+- **Hugging Face**: [![Hugging Face](https://img.shields.io/badge/%F0%9F%A4%97%20Hugging%20Face-Datasets-yellow)](https://huggingface.co/datasets/ThisIsLT/UAPD)
+- **Baidu Netdisk**: [Click to Download](https://pan.baidu.com/s/1wP8FzE-KBbYsO_diMaxvdQ) (**Passcode: k37s**)
 
 <center>
 <img src="https://github.com/ThisIsLT/DAPM/blob/main/fig/UAPD.jpg" width="800" height="500">
